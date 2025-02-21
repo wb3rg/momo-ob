@@ -45,7 +45,7 @@ st.markdown("""
 CONFIG = {
     'trading': {
         'timeframe': '1m',
-        'exchange': 'binanceusdm',  # Changed to Binance USD-M futures
+        'exchange': 'coinbase',  # Changed to Coinbase
     },
     'visualization': {
         'figure_size': (16, 8),  # Increased figure size for better visibility
@@ -77,21 +77,15 @@ CONFIG = {
 
 def initialize_exchange():
     """Initialize the cryptocurrency exchange connection."""
-    exchange = ccxt.binanceusdm({
+    exchange = ccxt.coinbase({
         'enableRateLimit': True,
-        'options': {
-            'defaultType': 'future',
-            'adjustForTimeDifference': True,
-            'recvWindow': 60000,
-            'defaultTimeInForce': 'GTC',
-            'warnOnFetchOhlcvLimitArgument': False,
-            'createMarketBuyOrderRequiresPrice': False,
-            'fetchOHLCVWarning': False,
-            'defaultContractType': 'perpetual'
-        },
         'timeout': 30000,
         'headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        },
+        'options': {
+            'fetchOHLCVWarning': False,
+            'createMarketBuyOrderRequiresPrice': False
         }
     })
     
@@ -119,8 +113,8 @@ def fetch_market_data(exchange, symbol, lookback):
         while remaining_bars > 0:
             for attempt in range(max_retries):
                 try:
-                    # Calculate how many bars to fetch in this iteration (max 1000)
-                    batch_size = min(1000, remaining_bars)
+                    # Calculate how many bars to fetch in this iteration (max 300 for Coinbase)
+                    batch_size = min(300, remaining_bars)
                     
                     # Fetch batch of data
                     ohlcv = exchange.fetch_ohlcv(
@@ -129,8 +123,7 @@ def fetch_market_data(exchange, symbol, lookback):
                         since=current_start,
                         limit=batch_size,
                         params={
-                            'price': 'mark',  # Use mark price for better reliability
-                            'contractType': 'PERPETUAL'
+                            'granularity': '60'  # 1-minute candles
                         }
                     )
                     
@@ -148,6 +141,7 @@ def fetch_market_data(exchange, symbol, lookback):
                     remaining_bars -= len(df)
                     if remaining_bars > 0:
                         current_start = int(df.index[-1].timestamp() * 1000) + 60000  # Add 1 minute in milliseconds
+                        time.sleep(0.1)  # Add small delay between requests
                     
                     break  # Success, exit retry loop
                     
@@ -396,11 +390,7 @@ def fetch_order_book(exchange: ccxt.Exchange, symbol: str, limit: int = 1000) ->
         try:
             order_book = exchange.fetch_order_book(
                 symbol,
-                limit=limit,
-                params={
-                    'contractType': 'PERPETUAL',
-                    'price': 'mark'
-                }
+                limit=limit
             )
             return order_book
         except Exception as e:
@@ -527,8 +517,8 @@ def main():
     
     # Sidebar controls
     with st.sidebar:
-        st.subheader("Enter Ticker Symbol for Momentum/Volume")
-        symbol = st.text_input("Symbol (USDT Perpetual)", value="BTC/USDT", key="symbol_input").strip()
+        st.subheader("Enter Ticker Symbol")
+        symbol = st.text_input("Symbol (e.g. BTC-USD)", value="BTC-USD", key="symbol_input").strip()
         
         st.subheader("Select Lookback Period")
         lookback_options = {
@@ -538,8 +528,8 @@ def main():
         lookback = st.selectbox("Lookback", options=list(lookback_options.keys()), key="lookback_select")
         lookback_value = lookback_options[lookback]
         
-        st.subheader("Enter Ticker Symbol for Order Book Depth")
-        ob_symbol = st.text_input("Symbol (USDT Perpetual)", value=symbol, key="ob_symbol_input").strip()
+        st.subheader("Enter Ticker Symbol for Order Book")
+        ob_symbol = st.text_input("Symbol (e.g. BTC-USD)", value=symbol, key="ob_symbol_input").strip()
         
         st.subheader("Select Order Book Depth")
         normalized_depth = st.slider("Depth", 
@@ -547,7 +537,7 @@ def main():
                                    max_value=100, 
                                    value=50, 
                                    key="depth_slider", 
-                                   help="Order book depth (1-100 scale, where 100 = 1000 orders, 50 = 500 orders, etc.)")
+                                   help="Order book depth (1-100 scale)")
         
         # Convert normalized depth to actual depth (1-100 maps to 1-1000)
         orderbook_depth = int(normalized_depth * 10)
@@ -565,11 +555,11 @@ def main():
                                   value=10, 
                                   key="inactive_slider")
         
-        # Add note about perpetual futures
+        # Add note about market type
         st.markdown("""
         ---
-        **Note:** This dashboard uses Binance USDT-M Perpetual Futures markets.
-        All pairs must be USDT-margined perpetual contracts.
+        **Note:** This dashboard uses Coinbase spot markets.
+        Common pairs: BTC-USD, ETH-USD, SOL-USD, etc.
         """)
         
         st.subheader("Update Frequency")
