@@ -156,29 +156,21 @@ CONFIG = {
 
 def initialize_exchange():
     """Initialize the cryptocurrency exchange connection."""
-    # Initialize both Binance Futures client and CCXT (for orderbook)
-    binance_client = BinanceClient()
-    exchange_class = getattr(ccxt, CONFIG['trading']['exchange'])
-    ccxt_client = exchange_class({
+    exchange = ccxt.binanceusdm({
         'enableRateLimit': True,
         'options': {
-            'defaultType': 'future',  # Use futures markets
-            'fetchOHLCVWarning': False,
-            'watchOrderBook': {
-                'limit': 5000  # Configure maximum order book depth
-            },
-            'watchOrderBookLimit': 5000
+            'defaultType': 'future',
+            'adjustForTimeDifference': True,
+            'recvWindow': 10000
         }
     })
-    return binance_client, ccxt_client
+    return exchange
 
-def fetch_market_data(clients, symbol, lookback):
-    """Fetch market data from Binance's REST API with proper pagination."""
+def fetch_market_data(exchange, symbol, lookback):
+    """Fetch market data using CCXT with proper pagination."""
     try:
-        binance_client, _ = clients
+        # Calculate the start time
         current_time = pd.Timestamp.now(tz='UTC')
-        
-        # Calculate the start time in milliseconds
         start_time = int((current_time - pd.Timedelta(minutes=lookback+10)).timestamp() * 1000)
         
         # Initialize an empty list to store all dataframes
@@ -197,15 +189,20 @@ def fetch_market_data(clients, symbol, lookback):
                     batch_size = min(1000, remaining_bars)
                     
                     # Fetch batch of data
-                    df = binance_client.get_klines_data(
+                    ohlcv = exchange.fetch_ohlcv(
                         symbol=symbol,
-                        interval="1m",
-                        limit=batch_size,
-                        start_time=current_start
+                        timeframe='1m',
+                        since=current_start,
+                        limit=batch_size
                     )
                     
-                    if df.empty:
+                    if not ohlcv:
                         raise Exception("Empty OHLCV data received")
+                    
+                    # Convert to DataFrame
+                    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                    df.set_index('timestamp', inplace=True)
                     
                     all_data.append(df)
                     
@@ -248,7 +245,7 @@ def calculate_vwma(df, period):
     df['vwma'] = (df['close'] * df['volume']).rolling(window=period).sum() / df['volume'].rolling(window=period).sum()
     return df
 
-def calculate_metrics(df, ccxt_client, symbol, orderbook_depth):
+def calculate_metrics(df, exchange, symbol, orderbook_depth):
     """Calculate various market metrics including VWAP and order book imbalance."""
     try:
         # Calculate VWAP - reset at the start of each session
@@ -260,7 +257,7 @@ def calculate_metrics(df, ccxt_client, symbol, orderbook_depth):
         df = calculate_vwma(df, CONFIG['analysis']['vwma_period'])
         
         # Calculate order book metrics using CCXT
-        order_book = ccxt_client.fetch_order_book(symbol, limit=orderbook_depth)
+        order_book = exchange.fetch_order_book(symbol, limit=orderbook_depth)
         bids_volume = sum(bid[1] for bid in order_book['bids'][:orderbook_depth])
         asks_volume = sum(ask[1] for ask in order_book['asks'][:orderbook_depth])
         
@@ -452,21 +449,13 @@ def create_price_table(df):
     # Create DataFrame and reverse the order so most recent is at top
     return pd.DataFrame(table_data).iloc[::-1]
 
-def fetch_order_book(binance_client: BinanceClient, symbol: str, limit: int = 1000) -> Dict:
-    """Fetch order book data from Binance Futures API."""
-    symbol = binance_client._convert_symbol_format(symbol)
-    endpoint = "/fapi/v1/depth"
-    params = {
-        "symbol": symbol,
-        "limit": min(limit, 5000)  # Ensure we don't exceed Binance's maximum limit
-    }
-    binance_client._wait_for_rate_limit()
-    response = binance_client.session.get(f"{binance_client.base_url}{endpoint}", params=params)
-    
-    if response.status_code != 200:
-        raise Exception(f"Error fetching order book: {response.text}")
-    
-    return response.json()
+def fetch_order_book(exchange: ccxt.Exchange, symbol: str, limit: int = 1000) -> Dict:
+    """Fetch order book data using CCXT."""
+    try:
+        order_book = exchange.fetch_order_book(symbol, limit=limit)
+        return order_book
+    except Exception as e:
+        raise Exception(f"Error fetching order book: {str(e)}")
 
 def plot_market_depth(fig, ax, order_book: Dict, symbol: str):
     """Create a market depth visualization with white theme matching the reference design."""
@@ -648,13 +637,13 @@ def main():
                 st.markdown(f"Fetching data for {symbol} with {lookback_value} 1-minute data points.", unsafe_allow_html=True)
                 
                 with st.spinner("Fetching momentum data..."):
-                    clients = initialize_exchange()
-                    df = fetch_market_data(clients, symbol, lookback_value)
+                    exchange = initialize_exchange()
+                    df = fetch_market_data(exchange, symbol, lookback_value)
                     
                     if last_minute is None or current_minute > last_minute:
                         CONFIG['analysis']['amplitude_threshold'] = amplitude_threshold
                         CONFIG['analysis']['inactive_period'] = inactive_period
-                        df = calculate_metrics(df, clients[1], symbol, orderbook_depth)
+                        df = calculate_metrics(df, exchange, symbol, orderbook_depth)
                         last_minute = current_minute
                     
                     # Create momentum plot
@@ -689,7 +678,7 @@ def main():
                     fig_depth = plt.figure(figsize=(10, 8))  # Changed to more square dimensions
                     ax_depth = fig_depth.add_subplot(111)
                     
-                    order_book = fetch_order_book(clients[0], ob_symbol, orderbook_depth)
+                    order_book = fetch_order_book(exchange, ob_symbol, orderbook_depth)
                     plot_market_depth(fig_depth, ax_depth, order_book, ob_symbol)
                     
                     st.pyplot(fig_depth)
