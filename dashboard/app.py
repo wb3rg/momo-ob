@@ -141,7 +141,7 @@ st.markdown("""
 CONFIG = {
     'trading': {
         'timeframe': '1',  # 1 minute
-        'exchange': 'binance',
+        'exchange': 'kraken',
     },
     'visualization': {
         'figure_size': (16, 8),
@@ -172,12 +172,12 @@ CONFIG = {
 }
 
 def initialize_exchange():
-    """Initialize the Binance exchange connection."""
-    exchange = ccxt.binance({
+    """Initialize the Kraken exchange connection."""
+    exchange = ccxt.kraken({
         'enableRateLimit': True,
         'options': {
             'adjustForTimeDifference': True,
-            'defaultType': 'spot'  # Ensure we're using spot market
+            'recvWindow': 10000
         }
     })
     return exchange
@@ -586,7 +586,7 @@ def main():
     # Sidebar controls
     with st.sidebar:
         st.subheader("Enter Ticker Symbol")
-        symbol = st.text_input("Symbol (e.g., BTC/USDT, ETH/USDT)", value="BTC/USDT", key="symbol_input").strip()
+        symbol = st.text_input("Symbol (e.g., BTC/USD, ETH/USD)", value="BTC/USD", key="symbol_input").strip()
         
         st.subheader("Select Lookback Period")
         lookback_options = {
@@ -623,11 +623,12 @@ def main():
                                   value=10, 
                                   key="inactive_slider")
         
-        # Add note about Binance markets
+        # Add note about Kraken markets
         st.markdown("""
         ---
-        **Note:** This dashboard uses Binance spot markets.
-        Common pairs: BTC/USDT, ETH/USDT, XRP/USDT
+        **Note:** This dashboard uses Kraken spot markets.
+        Common pairs: BTC/USD, ETH/USD, XRP/USD
+        Remember: BTC is shown as XBT in Kraken
         """)
         
         st.subheader("Update Frequency")
