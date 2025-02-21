@@ -158,25 +158,6 @@ CONFIG = {
 }
 
 def initialize_exchange():
-<<<<<<< Updated upstream
-    """Initialize the cryptocurrency exchange connection."""
-    exchange = ccxt.binanceusdm({
-        'enableRateLimit': True,
-        'options': {
-            'defaultType': 'future',
-            'adjustForTimeDifference': True,
-            'recvWindow': 10000
-        }
-    })
-    return exchange
-
-def fetch_market_data(exchange, symbol, lookback):
-    """Fetch market data using CCXT with proper pagination."""
-    try:
-        # Calculate the start time
-        current_time = pd.Timestamp.now(tz='UTC')
-        start_time = int((current_time - pd.Timedelta(minutes=lookback+10)).timestamp() * 1000)
-=======
     """Initialize the Kraken exchange connection."""
     kraken_client = KrakenClient()
     return kraken_client
@@ -188,68 +169,11 @@ def fetch_market_data(client, symbol, lookback):
         
         # Calculate the start time in seconds
         start_time = int((current_time - pd.Timedelta(minutes=lookback+10)).timestamp())
->>>>>>> Stashed changes
         
         # Fetch data with retry mechanism
         max_retries = 3
         retry_delay = 2  # seconds
         
-<<<<<<< Updated upstream
-        while remaining_bars > 0:
-            for attempt in range(max_retries):
-                try:
-                    # Calculate how many bars to fetch in this iteration (max 1000)
-                    batch_size = min(1000, remaining_bars)
-                    
-                    # Fetch batch of data
-                    ohlcv = exchange.fetch_ohlcv(
-                        symbol=symbol,
-                        timeframe='1m',
-                        since=current_start,
-                        limit=batch_size
-                    )
-                    
-                    if not ohlcv:
-                        raise Exception("Empty OHLCV data received")
-                    
-                    # Convert to DataFrame
-                    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                    df.set_index('timestamp', inplace=True)
-                    
-                    all_data.append(df)
-                    
-                    # Update remaining bars and start time for next batch
-                    remaining_bars -= len(df)
-                    if remaining_bars > 0:
-                        current_start = int(df.index[-1].timestamp() * 1000) + 60000  # Add 1 minute in milliseconds
-                    
-                    break  # Success, exit retry loop
-                    
-                except Exception as e:
-                    if attempt == max_retries - 1:  # Last attempt
-                        raise Exception(f"Failed to fetch data after {max_retries} attempts: {str(e)}")
-                    time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
-        
-        # Combine all data
-        if not all_data:
-            raise Exception("No data was fetched")
-            
-        df = pd.concat(all_data)
-        
-        # Convert timezone and sort
-        df.index = df.index.tz_localize('UTC').tz_convert('America/Toronto')
-        df = df.sort_index()
-        
-        # Take the required number of bars
-        df = df.tail(lookback)
-        
-        if len(df) < lookback * 0.9:  # If we got less than 90% of requested data
-            raise Exception(f"Insufficient data: got {len(df)} bars, expected {lookback}")
-        
-        return df
-        
-=======
         for attempt in range(max_retries):
             try:
                 df = client.get_klines_data(
@@ -275,7 +199,6 @@ def fetch_market_data(client, symbol, lookback):
                     raise Exception(f"Failed to fetch data after {max_retries} attempts: {str(e)}")
                 time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
                 
->>>>>>> Stashed changes
     except Exception as e:
         print(f"Error in fetch_market_data: {str(e)}")
         raise e
@@ -285,11 +208,7 @@ def calculate_vwma(df, period):
     df['vwma'] = (df['close'] * df['volume']).rolling(window=period).sum() / df['volume'].rolling(window=period).sum()
     return df
 
-<<<<<<< Updated upstream
-def calculate_metrics(df, exchange, symbol, orderbook_depth):
-=======
 def calculate_metrics(df, symbol, orderbook_depth):
->>>>>>> Stashed changes
     """Calculate various market metrics including VWAP and order book imbalance."""
     try:
         # Calculate VWAP - reset at the start of each session
@@ -300,22 +219,9 @@ def calculate_metrics(df, symbol, orderbook_depth):
         # Calculate VWMA
         df = calculate_vwma(df, CONFIG['analysis']['vwma_period'])
         
-<<<<<<< Updated upstream
-        # Calculate order book metrics using CCXT
-        order_book = exchange.fetch_order_book(symbol, limit=orderbook_depth)
-        bids_volume = sum(bid[1] for bid in order_book['bids'][:orderbook_depth])
-        asks_volume = sum(ask[1] for ask in order_book['asks'][:orderbook_depth])
-        
-        df['orderbook_imbalance'] = bids_volume / (bids_volume + asks_volume)
-        
-        # Calculate bubble sizes
-        df['bubble_size'] = df['volume'] * df['orderbook_imbalance']
-        df['bubble_size'] = df['bubble_size'] / df['bubble_size'].max()
-=======
         # Calculate order book metrics
         df['orderbook_imbalance'] = df['volume'] * df['orderbook_imbalance']
         df['orderbook_imbalance'] = df['orderbook_imbalance'] / df['orderbook_imbalance'].max()
->>>>>>> Stashed changes
         
         # Reset index to make 'time' a column for AmplitudeBasedLabeler
         df = df.reset_index()
@@ -499,15 +405,6 @@ def create_price_table(df):
     # Create DataFrame and reverse the order so most recent is at top
     return pd.DataFrame(table_data).iloc[::-1]
 
-<<<<<<< Updated upstream
-def fetch_order_book(exchange: ccxt.Exchange, symbol: str, limit: int = 1000) -> Dict:
-    """Fetch order book data using CCXT."""
-    try:
-        order_book = exchange.fetch_order_book(symbol, limit=limit)
-        return order_book
-    except Exception as e:
-        raise Exception(f"Error fetching order book: {str(e)}")
-=======
 def fetch_order_book(client: KrakenClient, symbol: str, limit: int = 1000) -> Dict:
     """Fetch order book data from Kraken API."""
     symbol = client._convert_symbol_format(symbol)
@@ -533,7 +430,6 @@ def fetch_order_book(client: KrakenClient, symbol: str, limit: int = 1000) -> Di
         "bids": [[float(price), float(volume), timestamp] for price, volume, timestamp in pair_data["bids"]],
         "asks": [[float(price), float(volume), timestamp] for price, volume, timestamp in pair_data["asks"]]
     }
->>>>>>> Stashed changes
 
 def plot_market_depth(fig, ax, order_book: Dict, symbol: str):
     """Create a market depth visualization with white theme matching the reference design."""
@@ -716,22 +612,13 @@ def main():
                 st.markdown(f"Fetching data for {symbol} with {lookback_value} 1-minute data points.", unsafe_allow_html=True)
                 
                 with st.spinner("Fetching momentum data..."):
-<<<<<<< Updated upstream
-                    exchange = initialize_exchange()
-                    df = fetch_market_data(exchange, symbol, lookback_value)
-=======
                     client = initialize_exchange()
                     df = fetch_market_data(client, symbol, lookback_value)
->>>>>>> Stashed changes
                     
                     if last_minute is None or current_minute > last_minute:
                         CONFIG['analysis']['amplitude_threshold'] = amplitude_threshold
                         CONFIG['analysis']['inactive_period'] = inactive_period
-<<<<<<< Updated upstream
-                        df = calculate_metrics(df, exchange, symbol, orderbook_depth)
-=======
                         df = calculate_metrics(df, symbol, orderbook_depth)
->>>>>>> Stashed changes
                         last_minute = current_minute
                     
                     # Create momentum plot
@@ -766,11 +653,7 @@ def main():
                     fig_depth = plt.figure(figsize=(10, 8))  # Changed to more square dimensions
                     ax_depth = fig_depth.add_subplot(111)
                     
-<<<<<<< Updated upstream
-                    order_book = fetch_order_book(exchange, ob_symbol, orderbook_depth)
-=======
                     order_book = fetch_order_book(client, ob_symbol, orderbook_depth)
->>>>>>> Stashed changes
                     plot_market_depth(fig_depth, ax_depth, order_book, ob_symbol)
                     
                     st.pyplot(fig_depth)
