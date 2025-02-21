@@ -274,9 +274,9 @@ def calculate_metrics(df, symbol, orderbook_depth):
         # Calculate VWMA
         df = calculate_vwma(df, CONFIG['analysis']['vwma_period'])
         
-        # Calculate order book metrics
-        df['orderbook_imbalance'] = df['volume'] * df['orderbook_imbalance']
-        df['orderbook_imbalance'] = df['orderbook_imbalance'] / df['orderbook_imbalance'].max()
+        # Use volume-based proxy for orderbook imbalance since we don't have real-time order book data
+        df['orderbook_imbalance'] = (df['close'] - df['vwap']) / df['vwap']
+        df['orderbook_imbalance'] = df['orderbook_imbalance'].clip(-1, 1)  # Clip to [-1, 1] range
         
         # Reset index to make 'time' a column for AmplitudeBasedLabeler
         df = df.reset_index()
@@ -299,6 +299,9 @@ def calculate_metrics(df, symbol, orderbook_depth):
         # Add labels to DataFrame and set index back
         df['momentum_label'] = momentum_labels
         df.set_index('time', inplace=True)
+        
+        # Add bubble size based on volume
+        df['bubble_size'] = df['volume'] / df['volume'].max()
         
         # Clean up intermediate columns
         df = df.drop(['cum_vol', 'cum_vol_price'], axis=1)
