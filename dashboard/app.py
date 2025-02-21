@@ -141,7 +141,7 @@ st.markdown("""
 CONFIG = {
     'trading': {
         'timeframe': '1',  # 1 minute
-        'exchange': 'kraken',
+        'exchange': 'coinbase',
     },
     'visualization': {
         'figure_size': (16, 8),
@@ -172,12 +172,11 @@ CONFIG = {
 }
 
 def initialize_exchange():
-    """Initialize the Kraken exchange connection."""
-    exchange = ccxt.kraken({
+    """Initialize the Coinbase exchange connection."""
+    exchange = ccxt.coinbase({
         'enableRateLimit': True,
         'options': {
-            'adjustForTimeDifference': True,
-            'recvWindow': 10000
+            'adjustForTimeDifference': True
         }
     })
     return exchange
@@ -623,12 +622,11 @@ def main():
                                   value=10, 
                                   key="inactive_slider")
         
-        # Add note about Kraken markets
+        # Add note about Coinbase markets
         st.markdown("""
         ---
-        **Note:** This dashboard uses Kraken spot markets.
+        **Note:** This dashboard uses Coinbase spot markets.
         Common pairs: BTC/USD, ETH/USD, XRP/USD
-        Remember: BTC is shown as XBT in Kraken
         """)
         
         st.subheader("Update Frequency")
