@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.ticker as ticker
 from matplotlib.dates import DateFormatter, date2num, AutoDateLocator
+import ccxt
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -94,8 +95,21 @@ class KrakenClient:
         
         df.set_index("time", inplace=True)
         
-        # Keep only necessary columns and limit the number of records
-        df = df[["open", "high", "low", "close", "volume"]].tail(limit)
+        # Sort by time and remove duplicates
+        df = df.sort_index()
+        df = df[~df.index.duplicated(keep='first')]
+        
+        # Keep only necessary columns
+        df = df[["open", "high", "low", "close", "volume"]]
+        
+        # If start_time was provided, only return data after that time
+        if start_time is not None:
+            start_dt = pd.to_datetime(start_time, unit='s')
+            df = df[df.index >= start_dt]
+        
+        # Limit the number of records if specified
+        if limit:
+            df = df.tail(limit)
         
         return df
 
@@ -127,7 +141,7 @@ st.markdown("""
 CONFIG = {
     'trading': {
         'timeframe': '1',  # 1 minute
-        'exchange': 'kraken',
+        'exchange': 'binance',
     },
     'visualization': {
         'figure_size': (16, 8),
@@ -158,47 +172,89 @@ CONFIG = {
 }
 
 def initialize_exchange():
-    """Initialize the Kraken exchange connection."""
-    kraken_client = KrakenClient()
-    return kraken_client
+    """Initialize the Binance exchange connection."""
+    exchange = ccxt.binance({
+        'enableRateLimit': True,
+        'options': {
+            'adjustForTimeDifference': True,
+            'defaultType': 'spot'  # Ensure we're using spot market
+        }
+    })
+    return exchange
 
-def fetch_market_data(client, symbol, lookback):
-    """Fetch market data from Kraken's REST API with proper pagination."""
+def fetch_market_data(exchange, symbol, lookback):
+    """Fetch market data using CCXT with proper pagination."""
     try:
+        # Calculate the start time
         current_time = pd.Timestamp.now(tz='UTC')
+        start_time = int((current_time - pd.Timedelta(minutes=lookback+10)).timestamp() * 1000)
         
-        # Calculate the start time in seconds
-        start_time = int((current_time - pd.Timedelta(minutes=lookback+10)).timestamp())
+        # Initialize an empty list to store all dataframes
+        all_data = []
+        remaining_bars = lookback + 10  # Add buffer
+        current_start = start_time
         
-        # Fetch data with retry mechanism
+        # Fetch data with retry mechanism and proper pagination
         max_retries = 3
         retry_delay = 2  # seconds
         
-        for attempt in range(max_retries):
-            try:
-                df = client.get_klines_data(
-                    symbol=symbol,
-                    interval="1",  # 1 minute
-                    limit=lookback,
-                    start_time=start_time
-                )
-                
-                if df.empty:
-                    raise Exception("Empty OHLCV data received")
-                
-                # Convert timezone
-                df.index = df.index.tz_localize('UTC').tz_convert('America/Toronto')
-                
-                if len(df) < lookback * 0.9:  # If we got less than 90% of requested data
-                    raise Exception(f"Insufficient data: got {len(df)} bars, expected {lookback}")
-                
-                return df
-                
-            except Exception as e:
-                if attempt == max_retries - 1:  # Last attempt
-                    raise Exception(f"Failed to fetch data after {max_retries} attempts: {str(e)}")
-                time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
-                
+        while remaining_bars > 0:
+            for attempt in range(max_retries):
+                try:
+                    # Calculate how many bars to fetch in this iteration
+                    batch_size = min(1000, remaining_bars)
+                    
+                    # Fetch batch of data
+                    ohlcv = exchange.fetch_ohlcv(
+                        symbol=symbol,
+                        timeframe='1m',
+                        since=current_start,
+                        limit=batch_size
+                    )
+                    
+                    if not ohlcv:
+                        raise Exception("Empty OHLCV data received")
+                    
+                    # Convert to DataFrame
+                    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                    df.set_index('timestamp', inplace=True)
+                    
+                    all_data.append(df)
+                    
+                    # Update remaining bars and start time for next batch
+                    remaining_bars -= len(df)
+                    if remaining_bars > 0:
+                        current_start = int(df.index[-1].timestamp() * 1000) + 60000  # Add 1 minute in milliseconds
+                    
+                    break  # Success, exit retry loop
+                    
+                except Exception as e:
+                    if attempt == max_retries - 1:  # Last attempt
+                        raise Exception(f"Failed to fetch data after {max_retries} attempts: {str(e)}")
+                    time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+        
+        # Combine all data
+        if not all_data:
+            raise Exception("No data was fetched")
+            
+        df = pd.concat(all_data)
+        
+        # Convert timezone and sort
+        df.index = df.index.tz_localize('UTC').tz_convert('America/Toronto')
+        df = df.sort_index()
+        
+        # Remove duplicates that might occur at batch boundaries
+        df = df[~df.index.duplicated(keep='first')]
+        
+        # Take the required number of bars
+        df = df.tail(lookback)
+        
+        if len(df) < lookback * 0.9:  # If we got less than 90% of requested data
+            raise Exception(f"Insufficient data: got {len(df)} bars, expected {lookback}")
+        
+        return df
+        
     except Exception as e:
         print(f"Error in fetch_market_data: {str(e)}")
         raise e
@@ -405,31 +461,13 @@ def create_price_table(df):
     # Create DataFrame and reverse the order so most recent is at top
     return pd.DataFrame(table_data).iloc[::-1]
 
-def fetch_order_book(client: KrakenClient, symbol: str, limit: int = 1000) -> Dict:
-    """Fetch order book data from Kraken API."""
-    symbol = client._convert_symbol_format(symbol)
-    endpoint = "/0/public/Depth"
-    params = {
-        "pair": symbol,
-        "count": min(limit, 1000)  # Kraken's maximum limit
-    }
-    client._wait_for_rate_limit()
-    response = client.session.get(f"{client.base_url}{endpoint}", params=params)
-    
-    if response.status_code != 200:
-        raise Exception(f"Error fetching order book: {response.text}")
-    
-    data = response.json()
-    if "error" in data and data["error"]:
-        raise Exception(f"Kraken API error: {data['error']}")
-    
-    result = data["result"]
-    pair_data = result[list(result.keys())[0]]  # Get first (and only) pair's data
-    
-    return {
-        "bids": [[float(price), float(volume), timestamp] for price, volume, timestamp in pair_data["bids"]],
-        "asks": [[float(price), float(volume), timestamp] for price, volume, timestamp in pair_data["asks"]]
-    }
+def fetch_order_book(exchange: ccxt.Exchange, symbol: str, limit: int = 1000) -> Dict:
+    """Fetch order book data using CCXT."""
+    try:
+        order_book = exchange.fetch_order_book(symbol, limit=limit)
+        return order_book
+    except Exception as e:
+        raise Exception(f"Error fetching order book: {str(e)}")
 
 def plot_market_depth(fig, ax, order_book: Dict, symbol: str):
     """Create a market depth visualization with white theme matching the reference design."""
@@ -548,7 +586,7 @@ def main():
     # Sidebar controls
     with st.sidebar:
         st.subheader("Enter Ticker Symbol")
-        symbol = st.text_input("Symbol (e.g., BTC/USD, ETH/USD)", value="BTC/USD", key="symbol_input").strip()
+        symbol = st.text_input("Symbol (e.g., BTC/USDT, ETH/USDT)", value="BTC/USDT", key="symbol_input").strip()
         
         st.subheader("Select Lookback Period")
         lookback_options = {
@@ -585,12 +623,11 @@ def main():
                                   value=10, 
                                   key="inactive_slider")
         
-        # Add note about Kraken markets
+        # Add note about Binance markets
         st.markdown("""
         ---
-        **Note:** This dashboard uses Kraken spot markets.
-        Common pairs: BTC/USD, ETH/USD, XRP/USD
-        Remember: BTC is shown as XBT in Kraken
+        **Note:** This dashboard uses Binance spot markets.
+        Common pairs: BTC/USDT, ETH/USDT, XRP/USDT
         """)
         
         st.subheader("Update Frequency")
@@ -612,8 +649,8 @@ def main():
                 st.markdown(f"Fetching data for {symbol} with {lookback_value} 1-minute data points.", unsafe_allow_html=True)
                 
                 with st.spinner("Fetching momentum data..."):
-                    client = initialize_exchange()
-                    df = fetch_market_data(client, symbol, lookback_value)
+                    exchange = initialize_exchange()
+                    df = fetch_market_data(exchange, symbol, lookback_value)
                     
                     if last_minute is None or current_minute > last_minute:
                         CONFIG['analysis']['amplitude_threshold'] = amplitude_threshold
@@ -653,7 +690,7 @@ def main():
                     fig_depth = plt.figure(figsize=(10, 8))  # Changed to more square dimensions
                     ax_depth = fig_depth.add_subplot(111)
                     
-                    order_book = fetch_order_book(client, ob_symbol, orderbook_depth)
+                    order_book = fetch_order_book(exchange, ob_symbol, orderbook_depth)
                     plot_market_depth(fig_depth, ax_depth, order_book, ob_symbol)
                     
                     st.pyplot(fig_depth)
