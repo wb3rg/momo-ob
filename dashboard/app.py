@@ -278,8 +278,9 @@ def calculate_metrics(df, symbol, orderbook_depth):
         df['orderbook_imbalance'] = (df['close'] - df['vwap']) / df['vwap']
         df['orderbook_imbalance'] = df['orderbook_imbalance'].clip(-1, 1)  # Clip to [-1, 1] range
         
-        # Reset index to make 'timestamp' a column for AmplitudeBasedLabeler
-        df = df.reset_index().rename(columns={'index': 'timestamp'})
+        # Reset index and rename for AmplitudeBasedLabeler which expects 'time' column
+        df = df.reset_index()
+        df = df.rename(columns={'index': 'time'})
         
         # Create AmplitudeBasedLabeler instance
         labeler = AmplitudeBasedLabeler(
@@ -298,7 +299,7 @@ def calculate_metrics(df, symbol, orderbook_depth):
         
         # Add labels to DataFrame and set index back
         df['momentum_label'] = momentum_labels
-        df.set_index('timestamp', inplace=True)
+        df.set_index('time', inplace=True)
         
         # Add bubble size based on volume
         df['bubble_size'] = df['volume'] / df['volume'].max()
