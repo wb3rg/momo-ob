@@ -3,7 +3,6 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.ticker as ticker
 from matplotlib.dates import DateFormatter, date2num, AutoDateLocator
-import ccxt
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -17,14 +16,14 @@ import base64
 import hashlib
 import urllib.parse
 
-class BinanceClient:
-    """Binance Futures REST API client with rate limiting and efficient data fetching."""
+class KrakenClient:
+    """Kraken REST API client with rate limiting and efficient data fetching."""
     
     def __init__(self):
-        self.base_url = "https://fapi.binance.com"  # Changed to futures API endpoint
+        self.base_url = "https://api.kraken.com"
         self.session = requests.Session()
         self.last_request_time = 0
-        self.min_request_interval = 0.05  # 50ms between requests (Binance has higher rate limits)
+        self.min_request_interval = 0.1  # 100ms between requests for Kraken
         
     def _wait_for_rate_limit(self):
         """Implement simple rate limiting."""
@@ -34,31 +33,40 @@ class BinanceClient:
             time.sleep(self.min_request_interval - time_since_last)
         self.last_request_time = time.time()
     
-    def get_klines_data(self, symbol: str, interval: str = "1m", limit: int = 1000, start_time: Optional[int] = None) -> pd.DataFrame:
+    def _convert_symbol_format(self, symbol: str) -> str:
+        """Convert symbol format to Kraken format."""
+        if "/" in symbol:
+            base, quote = symbol.split("/")
+            # Kraken uses XBT instead of BTC
+            base = "XBT" if base == "BTC" else base
+            quote = "XBT" if quote == "BTC" else quote
+            return f"{base}{quote}"
+        return symbol
+    
+    def get_klines_data(self, symbol: str, interval: str = "1", limit: int = 1000, start_time: Optional[int] = None) -> pd.DataFrame:
         """
-        Fetch klines (OHLCV) data from Binance Futures with efficient pagination.
+        Fetch OHLCV data from Kraken.
         
         Args:
-            symbol: Trading pair symbol (e.g., 'BTCUSDT')
-            interval: Time interval (1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M)
-            limit: Number of records to fetch (max 1500 for futures)
-            start_time: Start time in milliseconds
+            symbol: Trading pair symbol (e.g., 'XBT/USD')
+            interval: Time interval in minutes (1, 5, 15, 30, 60, 240, 1440, 10080, 21600)
+            limit: Number of records to fetch
+            start_time: Start time in seconds
         
         Returns:
             DataFrame with OHLCV data
         """
-        # Convert symbol format and add perpetual suffix if needed
         symbol = self._convert_symbol_format(symbol)
+        endpoint = "/0/public/OHLC"
         
-        endpoint = "/fapi/v1/klines"  # Changed to futures klines endpoint
         params = {
-            "symbol": symbol,
-            "interval": interval,
-            "limit": min(limit, 1500)  # Futures API allows up to 1500 candles
+            "pair": symbol,
+            "interval": interval
         }
+        
         if start_time is not None:
-            params["startTime"] = start_time
-            
+            params["since"] = start_time
+        
         self._wait_for_rate_limit()
         response = self.session.get(f"{self.base_url}{endpoint}", params=params)
         
@@ -67,34 +75,29 @@ class BinanceClient:
             
         data = response.json()
         
+        if "error" in data and data["error"]:
+            raise Exception(f"Kraken API error: {data['error']}")
+            
+        # Extract the actual OHLC data
+        result = data["result"]
+        pair_data = result[list(result.keys())[0]]  # Get first (and only) pair's data
+        
         # Convert to DataFrame
-        df = pd.DataFrame(data, columns=[
-            "time", "open", "high", "low", "close", "volume",
-            "close_time", "quote_volume", "trades", "taker_buy_volume",
-            "taker_buy_quote_volume", "ignore"
+        df = pd.DataFrame(pair_data, columns=[
+            "time", "open", "high", "low", "close", "vwap", "volume", "count"
         ])
         
         # Convert types and set index
-        df["time"] = pd.to_datetime(df["time"].astype(float), unit="ms")
-        for col in ["open", "high", "low", "close", "volume"]:
+        df["time"] = pd.to_datetime(df["time"].astype(float), unit="s")
+        for col in ["open", "high", "low", "close", "volume", "vwap"]:
             df[col] = df[col].astype(float)
+        
         df.set_index("time", inplace=True)
         
-        # Keep only necessary columns
-        df = df[["open", "high", "low", "close", "volume"]]
+        # Keep only necessary columns and limit the number of records
+        df = df[["open", "high", "low", "close", "volume"]].tail(limit)
         
         return df
-    
-    def _convert_symbol_format(self, symbol: str) -> str:
-        """Convert symbol format to Binance Futures format."""
-        if "/" in symbol:
-            base, quote = symbol.split("/")
-            # For futures, we only need to handle USDT pairs
-            if quote == "USDT":
-                return f"{base}{quote}"
-            else:
-                raise ValueError(f"Unsupported quote currency for futures: {quote}. Use USDT pairs.")
-        return symbol
 
 # Configure page
 st.set_page_config(
@@ -123,21 +126,21 @@ st.markdown("""
 # Configuration settings
 CONFIG = {
     'trading': {
-        'timeframe': '1m',
-        'exchange': 'binanceusdm',  # Changed to Binance USD-M futures
+        'timeframe': '1',  # 1 minute
+        'exchange': 'kraken',
     },
     'visualization': {
-        'figure_size': (16, 8),  # Increased figure size for better visibility
-        'price_color': '#c0c0c0',  # Updated to silver color
-        'vwap_above_color': '#3399ff',  # Blue for VWAP when price is above
-        'vwap_below_color': '#ff4d4d',  # Red for VWAP when price is below
-        'vwma_color': '#90EE90',  # Light green for VWMA
+        'figure_size': (16, 8),
+        'price_color': '#c0c0c0',
+        'vwap_above_color': '#3399ff',
+        'vwap_below_color': '#ff4d4d',
+        'vwma_color': '#90EE90',
         'up_color': '#3399ff',
         'down_color': '#ff4d4d',
         'volume_colors': {
-            'high': '#3399ff',  # Match up_color for bullish volume
-            'medium': '#cccccc',  # Keep neutral color
-            'low': '#ff4d4d'  # Match down_color for bearish volume
+            'high': '#3399ff',
+            'medium': '#cccccc',
+            'low': '#ff4d4d'
         },
         'base_bubble_size': 35,
         'volume_bins': 50,
@@ -155,6 +158,7 @@ CONFIG = {
 }
 
 def initialize_exchange():
+<<<<<<< Updated upstream
     """Initialize the cryptocurrency exchange connection."""
     exchange = ccxt.binanceusdm({
         'enableRateLimit': True,
@@ -172,16 +176,25 @@ def fetch_market_data(exchange, symbol, lookback):
         # Calculate the start time
         current_time = pd.Timestamp.now(tz='UTC')
         start_time = int((current_time - pd.Timedelta(minutes=lookback+10)).timestamp() * 1000)
+=======
+    """Initialize the Kraken exchange connection."""
+    kraken_client = KrakenClient()
+    return kraken_client
+
+def fetch_market_data(client, symbol, lookback):
+    """Fetch market data from Kraken's REST API with proper pagination."""
+    try:
+        current_time = pd.Timestamp.now(tz='UTC')
         
-        # Initialize an empty list to store all dataframes
-        all_data = []
-        remaining_bars = lookback + 10  # Add buffer
-        current_start = start_time
+        # Calculate the start time in seconds
+        start_time = int((current_time - pd.Timedelta(minutes=lookback+10)).timestamp())
+>>>>>>> Stashed changes
         
-        # Fetch data with retry mechanism and proper pagination
+        # Fetch data with retry mechanism
         max_retries = 3
         retry_delay = 2  # seconds
         
+<<<<<<< Updated upstream
         while remaining_bars > 0:
             for attempt in range(max_retries):
                 try:
@@ -236,6 +249,33 @@ def fetch_market_data(exchange, symbol, lookback):
         
         return df
         
+=======
+        for attempt in range(max_retries):
+            try:
+                df = client.get_klines_data(
+                    symbol=symbol,
+                    interval="1",  # 1 minute
+                    limit=lookback,
+                    start_time=start_time
+                )
+                
+                if df.empty:
+                    raise Exception("Empty OHLCV data received")
+                
+                # Convert timezone
+                df.index = df.index.tz_localize('UTC').tz_convert('America/Toronto')
+                
+                if len(df) < lookback * 0.9:  # If we got less than 90% of requested data
+                    raise Exception(f"Insufficient data: got {len(df)} bars, expected {lookback}")
+                
+                return df
+                
+            except Exception as e:
+                if attempt == max_retries - 1:  # Last attempt
+                    raise Exception(f"Failed to fetch data after {max_retries} attempts: {str(e)}")
+                time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+                
+>>>>>>> Stashed changes
     except Exception as e:
         print(f"Error in fetch_market_data: {str(e)}")
         raise e
@@ -245,7 +285,11 @@ def calculate_vwma(df, period):
     df['vwma'] = (df['close'] * df['volume']).rolling(window=period).sum() / df['volume'].rolling(window=period).sum()
     return df
 
+<<<<<<< Updated upstream
 def calculate_metrics(df, exchange, symbol, orderbook_depth):
+=======
+def calculate_metrics(df, symbol, orderbook_depth):
+>>>>>>> Stashed changes
     """Calculate various market metrics including VWAP and order book imbalance."""
     try:
         # Calculate VWAP - reset at the start of each session
@@ -256,6 +300,7 @@ def calculate_metrics(df, exchange, symbol, orderbook_depth):
         # Calculate VWMA
         df = calculate_vwma(df, CONFIG['analysis']['vwma_period'])
         
+<<<<<<< Updated upstream
         # Calculate order book metrics using CCXT
         order_book = exchange.fetch_order_book(symbol, limit=orderbook_depth)
         bids_volume = sum(bid[1] for bid in order_book['bids'][:orderbook_depth])
@@ -266,6 +311,11 @@ def calculate_metrics(df, exchange, symbol, orderbook_depth):
         # Calculate bubble sizes
         df['bubble_size'] = df['volume'] * df['orderbook_imbalance']
         df['bubble_size'] = df['bubble_size'] / df['bubble_size'].max()
+=======
+        # Calculate order book metrics
+        df['orderbook_imbalance'] = df['volume'] * df['orderbook_imbalance']
+        df['orderbook_imbalance'] = df['orderbook_imbalance'] / df['orderbook_imbalance'].max()
+>>>>>>> Stashed changes
         
         # Reset index to make 'time' a column for AmplitudeBasedLabeler
         df = df.reset_index()
@@ -449,6 +499,7 @@ def create_price_table(df):
     # Create DataFrame and reverse the order so most recent is at top
     return pd.DataFrame(table_data).iloc[::-1]
 
+<<<<<<< Updated upstream
 def fetch_order_book(exchange: ccxt.Exchange, symbol: str, limit: int = 1000) -> Dict:
     """Fetch order book data using CCXT."""
     try:
@@ -456,6 +507,33 @@ def fetch_order_book(exchange: ccxt.Exchange, symbol: str, limit: int = 1000) ->
         return order_book
     except Exception as e:
         raise Exception(f"Error fetching order book: {str(e)}")
+=======
+def fetch_order_book(client: KrakenClient, symbol: str, limit: int = 1000) -> Dict:
+    """Fetch order book data from Kraken API."""
+    symbol = client._convert_symbol_format(symbol)
+    endpoint = "/0/public/Depth"
+    params = {
+        "pair": symbol,
+        "count": min(limit, 1000)  # Kraken's maximum limit
+    }
+    client._wait_for_rate_limit()
+    response = client.session.get(f"{client.base_url}{endpoint}", params=params)
+    
+    if response.status_code != 200:
+        raise Exception(f"Error fetching order book: {response.text}")
+    
+    data = response.json()
+    if "error" in data and data["error"]:
+        raise Exception(f"Kraken API error: {data['error']}")
+    
+    result = data["result"]
+    pair_data = result[list(result.keys())[0]]  # Get first (and only) pair's data
+    
+    return {
+        "bids": [[float(price), float(volume), timestamp] for price, volume, timestamp in pair_data["bids"]],
+        "asks": [[float(price), float(volume), timestamp] for price, volume, timestamp in pair_data["asks"]]
+    }
+>>>>>>> Stashed changes
 
 def plot_market_depth(fig, ax, order_book: Dict, symbol: str):
     """Create a market depth visualization with white theme matching the reference design."""
@@ -573,8 +651,8 @@ def main():
     
     # Sidebar controls
     with st.sidebar:
-        st.subheader("Enter Ticker Symbol for Momentum/Volume")
-        symbol = st.text_input("Symbol (USDT Perpetual)", value="BTC/USDT", key="symbol_input").strip()
+        st.subheader("Enter Ticker Symbol")
+        symbol = st.text_input("Symbol (e.g., BTC/USD, ETH/USD)", value="BTC/USD", key="symbol_input").strip()
         
         st.subheader("Select Lookback Period")
         lookback_options = {
@@ -585,7 +663,7 @@ def main():
         lookback_value = lookback_options[lookback]
         
         st.subheader("Enter Ticker Symbol for Order Book Depth")
-        ob_symbol = st.text_input("Symbol (USDT Perpetual)", value=symbol, key="ob_symbol_input").strip()
+        ob_symbol = st.text_input("Symbol", value=symbol, key="ob_symbol_input").strip()
         
         st.subheader("Select Order Book Depth")
         normalized_depth = st.slider("Depth", 
@@ -611,11 +689,12 @@ def main():
                                   value=10, 
                                   key="inactive_slider")
         
-        # Add note about perpetual futures
+        # Add note about Kraken markets
         st.markdown("""
         ---
-        **Note:** This dashboard uses Binance USDT-M Perpetual Futures markets.
-        All pairs must be USDT-margined perpetual contracts.
+        **Note:** This dashboard uses Kraken spot markets.
+        Common pairs: BTC/USD, ETH/USD, XRP/USD
+        Remember: BTC is shown as XBT in Kraken
         """)
         
         st.subheader("Update Frequency")
@@ -637,13 +716,22 @@ def main():
                 st.markdown(f"Fetching data for {symbol} with {lookback_value} 1-minute data points.", unsafe_allow_html=True)
                 
                 with st.spinner("Fetching momentum data..."):
+<<<<<<< Updated upstream
                     exchange = initialize_exchange()
                     df = fetch_market_data(exchange, symbol, lookback_value)
+=======
+                    client = initialize_exchange()
+                    df = fetch_market_data(client, symbol, lookback_value)
+>>>>>>> Stashed changes
                     
                     if last_minute is None or current_minute > last_minute:
                         CONFIG['analysis']['amplitude_threshold'] = amplitude_threshold
                         CONFIG['analysis']['inactive_period'] = inactive_period
+<<<<<<< Updated upstream
                         df = calculate_metrics(df, exchange, symbol, orderbook_depth)
+=======
+                        df = calculate_metrics(df, symbol, orderbook_depth)
+>>>>>>> Stashed changes
                         last_minute = current_minute
                     
                     # Create momentum plot
@@ -678,7 +766,11 @@ def main():
                     fig_depth = plt.figure(figsize=(10, 8))  # Changed to more square dimensions
                     ax_depth = fig_depth.add_subplot(111)
                     
+<<<<<<< Updated upstream
                     order_book = fetch_order_book(exchange, ob_symbol, orderbook_depth)
+=======
+                    order_book = fetch_order_book(client, ob_symbol, orderbook_depth)
+>>>>>>> Stashed changes
                     plot_market_depth(fig_depth, ax_depth, order_book, ob_symbol)
                     
                     st.pyplot(fig_depth)
