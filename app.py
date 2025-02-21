@@ -17,85 +17,6 @@ import base64
 import hashlib
 import urllib.parse
 
-class BinanceClient:
-    """Binance Futures REST API client with rate limiting and efficient data fetching."""
-    
-    def __init__(self):
-        self.base_url = "https://fapi.binance.com"  # Changed to futures API endpoint
-        self.session = requests.Session()
-        self.last_request_time = 0
-        self.min_request_interval = 0.05  # 50ms between requests (Binance has higher rate limits)
-        
-    def _wait_for_rate_limit(self):
-        """Implement simple rate limiting."""
-        current_time = time.time()
-        time_since_last = current_time - self.last_request_time
-        if time_since_last < self.min_request_interval:
-            time.sleep(self.min_request_interval - time_since_last)
-        self.last_request_time = time.time()
-    
-    def get_klines_data(self, symbol: str, interval: str = "1m", limit: int = 1000, start_time: Optional[int] = None) -> pd.DataFrame:
-        """
-        Fetch klines (OHLCV) data from Binance Futures with efficient pagination.
-        
-        Args:
-            symbol: Trading pair symbol (e.g., 'BTCUSDT')
-            interval: Time interval (1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M)
-            limit: Number of records to fetch (max 1500 for futures)
-            start_time: Start time in milliseconds
-        
-        Returns:
-            DataFrame with OHLCV data
-        """
-        # Convert symbol format and add perpetual suffix if needed
-        symbol = self._convert_symbol_format(symbol)
-        
-        endpoint = "/fapi/v1/klines"  # Changed to futures klines endpoint
-        params = {
-            "symbol": symbol,
-            "interval": interval,
-            "limit": min(limit, 1500)  # Futures API allows up to 1500 candles
-        }
-        if start_time is not None:
-            params["startTime"] = start_time
-            
-        self._wait_for_rate_limit()
-        response = self.session.get(f"{self.base_url}{endpoint}", params=params)
-        
-        if response.status_code != 200:
-            raise Exception(f"Error fetching klines data: {response.text}")
-            
-        data = response.json()
-        
-        # Convert to DataFrame
-        df = pd.DataFrame(data, columns=[
-            "time", "open", "high", "low", "close", "volume",
-            "close_time", "quote_volume", "trades", "taker_buy_volume",
-            "taker_buy_quote_volume", "ignore"
-        ])
-        
-        # Convert types and set index
-        df["time"] = pd.to_datetime(df["time"].astype(float), unit="ms")
-        for col in ["open", "high", "low", "close", "volume"]:
-            df[col] = df[col].astype(float)
-        df.set_index("time", inplace=True)
-        
-        # Keep only necessary columns
-        df = df[["open", "high", "low", "close", "volume"]]
-        
-        return df
-    
-    def _convert_symbol_format(self, symbol: str) -> str:
-        """Convert symbol format to Binance Futures format."""
-        if "/" in symbol:
-            base, quote = symbol.split("/")
-            # For futures, we only need to handle USDT pairs
-            if quote == "USDT":
-                return f"{base}{quote}"
-            else:
-                raise ValueError(f"Unsupported quote currency for futures: {quote}. Use USDT pairs.")
-        return symbol
-
 # Configure page
 st.set_page_config(
     page_title="Quantavius Dashboard",
@@ -156,29 +77,34 @@ CONFIG = {
 
 def initialize_exchange():
     """Initialize the cryptocurrency exchange connection."""
-    # Initialize both Binance Futures client and CCXT (for orderbook)
-    binance_client = BinanceClient()
-    exchange_class = getattr(ccxt, CONFIG['trading']['exchange'])
-    ccxt_client = exchange_class({
+    exchange = ccxt.binanceusdm({
         'enableRateLimit': True,
         'options': {
-            'defaultType': 'future',  # Use futures markets
+            'defaultType': 'future',
+            'adjustForTimeDifference': True,
+            'recvWindow': 60000,
+            'defaultTimeInForce': 'GTC',
+            'warnOnFetchOhlcvLimitArgument': False,
+            'createMarketBuyOrderRequiresPrice': False,
             'fetchOHLCVWarning': False,
-            'watchOrderBook': {
-                'limit': 5000  # Configure maximum order book depth
-            },
-            'watchOrderBookLimit': 5000
+            'defaultContractType': 'perpetual'
+        },
+        'timeout': 30000,
+        'headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
     })
-    return binance_client, ccxt_client
+    
+    # Configure testnet if needed
+    # exchange.set_sandbox_mode(True)
+    
+    return exchange
 
-def fetch_market_data(clients, symbol, lookback):
-    """Fetch market data from Binance's REST API with proper pagination."""
+def fetch_market_data(exchange, symbol, lookback):
+    """Fetch market data using CCXT with proper pagination."""
     try:
-        binance_client, _ = clients
+        # Calculate the start time
         current_time = pd.Timestamp.now(tz='UTC')
-        
-        # Calculate the start time in milliseconds
         start_time = int((current_time - pd.Timedelta(minutes=lookback+10)).timestamp() * 1000)
         
         # Initialize an empty list to store all dataframes
@@ -197,15 +123,24 @@ def fetch_market_data(clients, symbol, lookback):
                     batch_size = min(1000, remaining_bars)
                     
                     # Fetch batch of data
-                    df = binance_client.get_klines_data(
+                    ohlcv = exchange.fetch_ohlcv(
                         symbol=symbol,
-                        interval="1m",
+                        timeframe='1m',
+                        since=current_start,
                         limit=batch_size,
-                        start_time=current_start
+                        params={
+                            'price': 'mark',  # Use mark price for better reliability
+                            'contractType': 'PERPETUAL'
+                        }
                     )
                     
-                    if df.empty:
+                    if not ohlcv:
                         raise Exception("Empty OHLCV data received")
+                    
+                    # Convert to DataFrame
+                    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                    df.set_index('timestamp', inplace=True)
                     
                     all_data.append(df)
                     
@@ -452,21 +387,29 @@ def create_price_table(df):
     # Create DataFrame and reverse the order so most recent is at top
     return pd.DataFrame(table_data).iloc[::-1]
 
-def fetch_order_book(binance_client: BinanceClient, symbol: str, limit: int = 1000) -> Dict:
-    """Fetch order book data from Binance Futures API."""
-    symbol = binance_client._convert_symbol_format(symbol)
-    endpoint = "/fapi/v1/depth"
-    params = {
-        "symbol": symbol,
-        "limit": min(limit, 5000)  # Ensure we don't exceed Binance's maximum limit
-    }
-    binance_client._wait_for_rate_limit()
-    response = binance_client.session.get(f"{binance_client.base_url}{endpoint}", params=params)
+def fetch_order_book(exchange: ccxt.Exchange, symbol: str, limit: int = 1000) -> Dict:
+    """Fetch order book data using CCXT with retries and proper error handling."""
+    max_retries = 3
+    retry_delay = 2
     
-    if response.status_code != 200:
-        raise Exception(f"Error fetching order book: {response.text}")
+    for attempt in range(max_retries):
+        try:
+            order_book = exchange.fetch_order_book(
+                symbol,
+                limit=limit,
+                params={
+                    'contractType': 'PERPETUAL',
+                    'price': 'mark'
+                }
+            )
+            return order_book
+        except Exception as e:
+            if attempt == max_retries - 1:  # Last attempt
+                raise Exception(f"Error fetching order book: {str(e)}")
+            time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+            continue
     
-    return response.json()
+    return {'bids': [], 'asks': []}
 
 def plot_market_depth(fig, ax, order_book: Dict, symbol: str):
     """Create a market depth visualization with white theme matching the reference design."""
@@ -648,13 +591,13 @@ def main():
                 st.markdown(f"Fetching data for {symbol} with {lookback_value} 1-minute data points.", unsafe_allow_html=True)
                 
                 with st.spinner("Fetching momentum data..."):
-                    clients = initialize_exchange()
-                    df = fetch_market_data(clients, symbol, lookback_value)
+                    exchange = initialize_exchange()
+                    df = fetch_market_data(exchange, symbol, lookback_value)
                     
                     if last_minute is None or current_minute > last_minute:
                         CONFIG['analysis']['amplitude_threshold'] = amplitude_threshold
                         CONFIG['analysis']['inactive_period'] = inactive_period
-                        df = calculate_metrics(df, clients[1], symbol, orderbook_depth)
+                        df = calculate_metrics(df, exchange, symbol, orderbook_depth)
                         last_minute = current_minute
                     
                     # Create momentum plot
