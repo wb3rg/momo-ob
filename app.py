@@ -9,13 +9,7 @@ import numpy as np
 from datetime import datetime, timedelta
 from tseries_patterns import AmplitudeBasedLabeler
 import time
-import requests
-import math
 from typing import Dict, List, Optional, Tuple, Union
-import hmac
-import base64
-import hashlib
-import urllib.parse
 
 # Configure page
 st.set_page_config(
@@ -45,20 +39,20 @@ st.markdown("""
 CONFIG = {
     'trading': {
         'timeframe': '1m',
-        'exchange': 'coinbase',  # Changed to Coinbase
+        'exchange': 'coinbase',
     },
     'visualization': {
-        'figure_size': (16, 8),  # Increased figure size for better visibility
-        'price_color': '#c0c0c0',  # Updated to silver color
-        'vwap_above_color': '#3399ff',  # Blue for VWAP when price is above
-        'vwap_below_color': '#ff4d4d',  # Red for VWAP when price is below
-        'vwma_color': '#90EE90',  # Light green for VWMA
+        'figure_size': (16, 8),
+        'price_color': '#c0c0c0',
+        'vwap_above_color': '#3399ff',
+        'vwap_below_color': '#ff4d4d',
+        'vwma_color': '#90EE90',
         'up_color': '#3399ff',
         'down_color': '#ff4d4d',
         'volume_colors': {
-            'high': '#3399ff',  # Match up_color for bullish volume
-            'medium': '#cccccc',  # Keep neutral color
-            'low': '#ff4d4d'  # Match down_color for bearish volume
+            'high': '#3399ff',
+            'medium': '#cccccc',
+            'low': '#ff4d4d'
         },
         'base_bubble_size': 35,
         'volume_bins': 50,
@@ -622,7 +616,7 @@ def main():
                     fig_depth = plt.figure(figsize=(10, 8))  # Changed to more square dimensions
                     ax_depth = fig_depth.add_subplot(111)
                     
-                    order_book = fetch_order_book(clients[0], ob_symbol, orderbook_depth)
+                    order_book = fetch_order_book(exchange, ob_symbol, orderbook_depth)
                     plot_market_depth(fig_depth, ax_depth, order_book, ob_symbol)
                     
                     st.pyplot(fig_depth)
