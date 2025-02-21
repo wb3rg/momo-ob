@@ -266,6 +266,9 @@ def calculate_vwma(df, period):
 def calculate_metrics(df, symbol, orderbook_depth):
     """Calculate various market metrics including VWAP and order book imbalance."""
     try:
+        # Store original index name
+        index_name = df.index.name if df.index.name else 'timestamp'
+        
         # Calculate VWAP - reset at the start of each session
         df['cum_vol'] = df['volume'].cumsum()
         df['cum_vol_price'] = (df['close'] * df['volume']).cumsum()
@@ -278,9 +281,9 @@ def calculate_metrics(df, symbol, orderbook_depth):
         df['orderbook_imbalance'] = (df['close'] - df['vwap']) / df['vwap']
         df['orderbook_imbalance'] = df['orderbook_imbalance'].clip(-1, 1)  # Clip to [-1, 1] range
         
-        # Reset index and rename for AmplitudeBasedLabeler which expects 'time' column
+        # Reset index and create time column for AmplitudeBasedLabeler
         df = df.reset_index()
-        df = df.rename(columns={'index': 'time'})
+        df = df.rename(columns={index_name: 'time'})
         
         # Create AmplitudeBasedLabeler instance
         labeler = AmplitudeBasedLabeler(
