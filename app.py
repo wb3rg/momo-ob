@@ -395,89 +395,258 @@ def fetch_order_book(exchange: ccxt.Exchange, symbol: str, limit: int = 1000) ->
     
     return {'bids': [], 'asks': []}
 
-def plot_market_depth(fig, ax, order_book: Dict, symbol: str):
-    """Create a market depth visualization with white theme matching the reference design."""
-    if not order_book or 'bids' not in order_book or 'asks' not in order_book:
+def plot_order_book_heatmap(fig, axes, order_book1: Dict, order_book2: Dict, symbol: str):
+    """Create an enhanced order book visualization with heatmap, volume delta, and OI delta."""
+    if not order_book1 or not order_book2 or 'bids' not in order_book1 or 'asks' not in order_book1:
         return
     
-    # Process bids and asks
-    bids = np.array(order_book['bids'], dtype=float)
-    asks = np.array(order_book['asks'], dtype=float)
+    # Extract the base and quote currency from the symbol
+    if '-' in symbol:
+        base_currency, quote_currency = symbol.split('-')
+    else:
+        # Default fallback if symbol format is different
+        base_currency = symbol[:-3] if len(symbol) > 3 else "BTC"
+        quote_currency = symbol[-3:] if len(symbol) > 3 else "USD"
     
-    if len(bids) == 0 or len(asks) == 0:
-        return
+    # Process order book data
+    # First snapshot
+    bids1 = np.array(order_book1['bids'], dtype=float) if len(order_book1['bids']) > 0 else np.array([[0, 0]])
+    asks1 = np.array(order_book1['asks'], dtype=float) if len(order_book1['asks']) > 0 else np.array([[0, 0]])
     
-    # Process bids (reverse order to get ascending)
-    bid_prices = bids[:, 0][::-1]  # Reverse to get ascending order
-    bid_volumes = bids[:, 1][::-1]
-    cumulative_bid_volumes = np.cumsum(bid_volumes[::-1])[::-1]  # Compute properly ordered cumulative volume
+    # Second snapshot
+    bids2 = np.array(order_book2['bids'], dtype=float) if len(order_book2['bids']) > 0 else np.array([[0, 0]])
+    asks2 = np.array(order_book2['asks'], dtype=float) if len(order_book2['asks']) > 0 else np.array([[0, 0]])
     
-    # Process asks (already in ascending order)
-    ask_prices = asks[:, 0]
-    ask_volumes = asks[:, 1]
-    cumulative_ask_volumes = np.cumsum(ask_volumes)
+    # Convert to DataFrames for easier manipulation
+    bids1_df = pd.DataFrame(bids1, columns=['Price', 'Volume'])
+    asks1_df = pd.DataFrame(asks1, columns=['Price', 'Volume'])
+    bids2_df = pd.DataFrame(bids2, columns=['Price', 'Volume'])
+    asks2_df = pd.DataFrame(asks2, columns=['Price', 'Volume'])
+    
+    # Sort DataFrames
+    bids1_df = bids1_df.sort_values(by='Price')
+    asks1_df = asks1_df.sort_values(by='Price')
+    bids2_df = bids2_df.sort_values(by='Price')
+    asks2_df = asks2_df.sort_values(by='Price')
+    
+    # Calculate cumulative volumes
+    bids1_df['Cumulative Volume'] = bids1_df['Volume'].cumsum()
+    asks1_df['Cumulative Volume'] = asks1_df['Volume'].cumsum()
+    bids2_df['Cumulative Volume'] = bids2_df['Volume'].cumsum()
+    asks2_df['Cumulative Volume'] = asks2_df['Volume'].cumsum()
+    
+    # Calculate volume deltas
+    bids_delta = pd.merge(bids1_df[['Price', 'Volume']], 
+                         bids2_df[['Price', 'Volume']], 
+                         on='Price', 
+                         how='outer', 
+                         suffixes=('_1', '_2'))
+    bids_delta.fillna(0, inplace=True)
+    bids_delta['Volume_Delta'] = bids_delta['Volume_2'] - bids_delta['Volume_1']
+    
+    asks_delta = pd.merge(asks1_df[['Price', 'Volume']], 
+                         asks2_df[['Price', 'Volume']], 
+                         on='Price', 
+                         how='outer', 
+                         suffixes=('_1', '_2'))
+    asks_delta.fillna(0, inplace=True)
+    asks_delta['Volume_Delta'] = asks_delta['Volume_2'] - asks_delta['Volume_1']
+    
+    # Calculate OI delta (change in cumulative volume)
+    bids_oi_delta = pd.merge(bids1_df[['Price', 'Cumulative Volume']], 
+                            bids2_df[['Price', 'Cumulative Volume']], 
+                            on='Price', 
+                            how='outer', 
+                            suffixes=('_1', '_2'))
+    bids_oi_delta.fillna(method='ffill', inplace=True)
+    bids_oi_delta.fillna(0, inplace=True)
+    bids_oi_delta['OI_Delta'] = bids_oi_delta['Cumulative Volume_2'] - bids_oi_delta['Cumulative Volume_1']
+    
+    asks_oi_delta = pd.merge(asks1_df[['Price', 'Cumulative Volume']], 
+                            asks2_df[['Price', 'Cumulative Volume']], 
+                            on='Price', 
+                            how='outer', 
+                            suffixes=('_1', '_2'))
+    asks_oi_delta.fillna(method='ffill', inplace=True)
+    asks_oi_delta.fillna(0, inplace=True)
+    asks_oi_delta['OI_Delta'] = asks_oi_delta['Cumulative Volume_2'] - asks_oi_delta['Cumulative Volume_1']
+    
+    # Extract axes
+    ax1, ax2, ax3 = axes
+    
+    # Set background color for all plots
+    for ax in axes:
+        ax.set_facecolor('white')
+        fig.patch.set_facecolor('white')
+        
+        # Add borders to the subplots
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_color('black')
+            spine.set_linewidth(0.5)
+    
+    # Plot 1: Order Book Depth (Top Pane)
+    ax1.plot(bids1_df['Price'], bids1_df['Cumulative Volume'], 
+            label='Bids (Buy)', color='green', linewidth=1.5)
+    ax1.plot(asks1_df['Price'], asks1_df['Cumulative Volume'], 
+            label='Asks (Sell)', color='red', linewidth=1.5)
+    ax1.fill_between(bids1_df['Price'], bids1_df['Cumulative Volume'], color='green', alpha=0.2)
+    ax1.fill_between(asks1_df['Price'], asks1_df['Cumulative Volume'], color='red', alpha=0.2)
     
     # Calculate mid price
-    mid_price = (bid_prices[-1] + ask_prices[0]) / 2  # Using highest bid and lowest ask
+    if len(bids1_df) > 0 and len(asks1_df) > 0:
+        mid_price = (bids1_df['Price'].max() + asks1_df['Price'].min()) / 2
+        ax1.axvline(x=mid_price, color='black', linestyle='--', alpha=0.5, linewidth=0.5)
     
-    # Set white background
-    ax.set_facecolor('white')
-    fig.patch.set_facecolor('white')
+    ax1.set_ylabel(f'Cumulative Volume ({base_currency})', fontsize=9)
+    ax1.set_title(f'{symbol} Order Book Depth', fontsize=10, pad=5)
+    ax1.legend(fontsize=8, frameon=True, edgecolor='black', fancybox=False)
     
-    # Plot bids and asks with step and fill
-    ax.step(bid_prices, cumulative_bid_volumes, where='post', label='Bids', color='green', linewidth=1)
-    ax.fill_between(bid_prices, cumulative_bid_volumes, step='post', alpha=0.3, color='green')
+    # Calculate appropriate bar width based on price range
+    all_prices = np.concatenate([
+        bids_delta['Price'].values, 
+        asks_delta['Price'].values
+    ])
     
-    ax.step(ask_prices, cumulative_ask_volumes, where='post', label='Asks', color='red', linewidth=1)
-    ax.fill_between(ask_prices, cumulative_ask_volumes, step='post', alpha=0.3, color='red')
+    if len(all_prices) > 0:
+        price_range = np.max(all_prices) - np.min(all_prices) if len(all_prices) > 1 else 1
+        bar_width = price_range * 0.0005  # 0.05% of the price range
+    else:
+        bar_width = 0.01  # Default fallback
     
-    # Add mid price line
-    ax.axvline(x=mid_price, color='grey', linestyle=':', alpha=0.3, label='Mid Price')
+    # Plot 2: Volume Delta (Middle Pane)
+    # Filter out very small changes to reduce noise
+    threshold = 0.01
+    bid_significant = bids_delta[abs(bids_delta['Volume_Delta']) > threshold]
+    ask_significant = asks_delta[abs(asks_delta['Volume_Delta']) > threshold]
     
-    # Set title and labels
-    ax.set_title(f'Order Book Depth for {symbol}', pad=20, fontsize=12, color='black')
-    ax.set_xlabel('Price', color='black', labelpad=10)
-    ax.set_ylabel('Cumulative Volume', color='black', labelpad=10)
+    # Plot bid volume changes (green for positive, red for negative)
+    if len(bid_significant) > 0:
+        positive_bids = bid_significant[bid_significant['Volume_Delta'] > 0]
+        negative_bids = bid_significant[bid_significant['Volume_Delta'] < 0]
+        
+        if len(positive_bids) > 0:
+            ax2.bar(positive_bids['Price'], 
+                   positive_bids['Volume_Delta'], 
+                   width=bar_width, 
+                   color='green',
+                   edgecolor='darkgreen', 
+                   linewidth=0.3,
+                   label='Volume Increase')
+        
+        if len(negative_bids) > 0:
+            ax2.bar(negative_bids['Price'], 
+                   negative_bids['Volume_Delta'], 
+                   width=bar_width, 
+                   color='red',
+                   edgecolor='darkred', 
+                   linewidth=0.3,
+                   label='Volume Decrease')
     
-    # Remove grid
-    ax.grid(False)
+    # Plot ask volume changes (green for positive, red for negative)
+    if len(ask_significant) > 0:
+        positive_asks = ask_significant[ask_significant['Volume_Delta'] > 0]
+        negative_asks = ask_significant[ask_significant['Volume_Delta'] < 0]
+        
+        if len(positive_asks) > 0:
+            ax2.bar(positive_asks['Price'], 
+                   positive_asks['Volume_Delta'], 
+                   width=bar_width, 
+                   color='green',
+                   edgecolor='darkgreen', 
+                   linewidth=0.3)
+        
+        if len(negative_asks) > 0:
+            ax2.bar(negative_asks['Price'], 
+                   negative_asks['Volume_Delta'], 
+                   width=bar_width, 
+                   color='red',
+                   edgecolor='darkred', 
+                   linewidth=0.3)
     
-    # Adjust figure size to accommodate legend
-    box = ax.get_position()
-    ax.set_position([box.x0, box.y0, box.width * 0.95, box.height])
+    ax2.set_ylabel(f'Volume Change ({base_currency})', fontsize=9)
+    ax2.set_title(f'{symbol} Order Book Volume Changes', fontsize=10, pad=5)
+    ax2.axhline(y=0, color='black', linestyle='-', alpha=0.5, linewidth=0.5)
     
-    # Place legend outside the plot on the right
-    ax.legend(frameon=True, 
-             facecolor='white', 
-             edgecolor='none', 
-             fontsize=8,
-             loc='center left', 
-             bbox_to_anchor=(1.01, 0.5))
+    # Plot 3: OI Delta (Bottom Pane)
+    # Filter out very small changes to reduce noise
+    bid_oi_significant = bids_oi_delta[abs(bids_oi_delta['OI_Delta']) > threshold]
+    ask_oi_significant = asks_oi_delta[abs(asks_oi_delta['OI_Delta']) > threshold]
     
-    # Set x-axis limits and format ticks
-    price_range = max(ask_prices[-1] - bid_prices[0], 1e-8)
-    x_min = bid_prices[0] - price_range * 0.1
-    x_max = ask_prices[-1] + price_range * 0.1
-    ax.set_xlim(x_min, x_max)
+    # Plot bid OI changes (blue for positive, darker blue for negative)
+    if len(bid_oi_significant) > 0:
+        positive_bid_oi = bid_oi_significant[bid_oi_significant['OI_Delta'] > 0]
+        negative_bid_oi = bid_oi_significant[bid_oi_significant['OI_Delta'] < 0]
+        
+        if len(positive_bid_oi) > 0:
+            ax3.bar(positive_bid_oi['Price'], 
+                   positive_bid_oi['OI_Delta'], 
+                   width=bar_width, 
+                   color='royalblue',
+                   edgecolor='navy', 
+                   linewidth=0.3,
+                   label='Bid OI Increase')
+        
+        if len(negative_bid_oi) > 0:
+            ax3.bar(negative_bid_oi['Price'], 
+                   negative_bid_oi['OI_Delta'], 
+                   width=bar_width, 
+                   color='darkblue',
+                   edgecolor='navy', 
+                   linewidth=0.3,
+                   label='Bid OI Decrease')
     
-    # Format x-axis ticks with dollar signs and proper spacing
-    tick_positions = np.linspace(x_min, x_max, 10)
-    ax.set_xticks(tick_positions)
-    ax.set_xticklabels([f'${x:,.2f}' for x in tick_positions], rotation=0)
+    # Plot ask OI changes (orange for positive, darker orange for negative)
+    if len(ask_oi_significant) > 0:
+        positive_ask_oi = ask_oi_significant[ask_oi_significant['OI_Delta'] > 0]
+        negative_ask_oi = ask_oi_significant[ask_oi_significant['OI_Delta'] < 0]
+        
+        if len(positive_ask_oi) > 0:
+            ax3.bar(positive_ask_oi['Price'], 
+                   positive_ask_oi['OI_Delta'], 
+                   width=bar_width, 
+                   color='orange',
+                   edgecolor='darkorange', 
+                   linewidth=0.3,
+                   label='Ask OI Increase')
+        
+        if len(negative_ask_oi) > 0:
+            ax3.bar(negative_ask_oi['Price'], 
+                   negative_ask_oi['OI_Delta'], 
+                   width=bar_width, 
+                   color='darkorange',
+                   edgecolor='saddlebrown', 
+                   linewidth=0.3,
+                   label='Ask OI Decrease')
     
-    # Format y-axis with comma-separated numbers
-    ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f'{int(x):,}'))
+    ax3.set_xlabel(f'Price ({quote_currency})', fontsize=9)
+    ax3.set_ylabel(f'OI Delta ({base_currency})', fontsize=9)
+    ax3.set_title(f'{symbol} Open Interest Delta', fontsize=10, pad=5)
+    ax3.axhline(y=0, color='black', linestyle='-', alpha=0.5, linewidth=0.5)
     
-    # Style the spines
-    for spine in ax.spines.values():
-        spine.set_color('black')
-        spine.set_linewidth(0.5)
+    # Set x-axis limits for all plots based on the price range
+    if len(all_prices) > 1:
+        x_min = np.min(all_prices) - price_range * 0.05
+        x_max = np.max(all_prices) + price_range * 0.05
+        
+        for ax in axes:
+            ax.set_xlim(x_min, x_max)
+            
+            # Format x-axis ticks with dollar signs
+            ax.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f'${x:,.2f}'))
+            
+            # Format y-axis with comma-separated numbers
+            ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda y, _: f'{int(y):,}' if y == int(y) else f'{y:,.2f}'))
+            
+            # Adjust tick parameters
+            ax.tick_params(axis='both', colors='black', labelsize=8)
     
-    # Adjust tick colors and sizes
-    ax.tick_params(axis='both', colors='black', labelsize=8)
+    # Add legends to plots 2 and 3
+    ax2.legend(fontsize=8, frameon=True, edgecolor='black', fancybox=False, loc='upper right')
+    ax3.legend(fontsize=8, frameon=True, edgecolor='black', fancybox=False, loc='upper right')
     
-    # Tight layout with more right padding for legend
-    fig.tight_layout(pad=1.1)
+    # Adjust layout
+    plt.tight_layout()
 
 # Streamlit app
 def main():
@@ -563,7 +732,11 @@ def main():
     try:
         momentum_placeholder = st.empty()
         depth_placeholder = st.empty()
+        heatmap_placeholder = st.empty()
         last_minute = None
+        
+        # Store previous order book for delta calculations
+        previous_order_book = None
         
         while True:
             current_time = pd.Timestamp.now(tz='US/Eastern')
@@ -608,25 +781,146 @@ def main():
                     st.markdown(f"<p style='color: #666666; font-size: 0.8em;'>Last data timestamp (EST): {df.index[-1].strftime('%Y-%m-%d %H:%M:%S %Z')}</p>", unsafe_allow_html=True)
             
             with depth_placeholder.container():
-                # Market Depth Section
+                # Original Market Depth Section
                 st.markdown("<h2>📊 Order Book Depth (Live)</h2>", unsafe_allow_html=True)
                 
                 with st.spinner("Fetching order book data..."):
                     # Create market depth plot with more square aspect ratio
-                    fig_depth = plt.figure(figsize=(10, 8))  # Changed to more square dimensions
+                    fig_depth = plt.figure(figsize=(10, 8))  # Square dimensions
                     ax_depth = fig_depth.add_subplot(111)
                     
-                    order_book = fetch_order_book(exchange, ob_symbol, orderbook_depth)
-                    plot_market_depth(fig_depth, ax_depth, order_book, ob_symbol)
+                    # Fetch current order book if not already fetched
+                    if 'exchange' not in locals():
+                        exchange = initialize_exchange()
+                    current_order_book = fetch_order_book(exchange, ob_symbol, orderbook_depth)
                     
+                    # Plot the original market depth visualization
+                    plot_market_depth(fig_depth, ax_depth, current_order_book, ob_symbol)
+                    
+                    # Display the plot
                     st.pyplot(fig_depth)
                     plt.close(fig_depth)
+            
+            with heatmap_placeholder.container():
+                # New Order Book Heatmap Section
+                st.markdown("<h2>📈 Order Book Heatmap (Live)</h2>", unsafe_allow_html=True)
+                
+                with st.spinner("Fetching order book heatmap data..."):
+                    # If we don't have a previous order book, use the current one
+                    if previous_order_book is None:
+                        # Wait a short time to get a second snapshot
+                        time.sleep(2)
+                        previous_order_book = current_order_book
+                        current_order_book = fetch_order_book(exchange, ob_symbol, orderbook_depth)
+                    
+                    # Create market depth plot with three subplots
+                    fig_heatmap = plt.figure(figsize=(10, 12))
+                    gs = gridspec.GridSpec(3, 1, height_ratios=[1, 0.8, 0.8])
+                    
+                    ax1 = fig_heatmap.add_subplot(gs[0])  # Order Book Depth
+                    ax2 = fig_heatmap.add_subplot(gs[1])  # Volume Delta
+                    ax3 = fig_heatmap.add_subplot(gs[2])  # OI Delta
+                    
+                    # Plot the order book heatmap
+                    plot_order_book_heatmap(fig_heatmap, [ax1, ax2, ax3], previous_order_book, current_order_book, ob_symbol)
+                    
+                    # Display the plot
+                    st.pyplot(fig_heatmap)
+                    plt.close(fig_heatmap)
+                    
+                    # Update previous order book for next iteration
+                    previous_order_book = current_order_book
             
             # Wait for 30 seconds before the next update
             time.sleep(30)
             
     except Exception as e:
         st.error(f"Error: {str(e)}")
+
+# Keep the original plot_market_depth function
+def plot_market_depth(fig, ax, order_book: Dict, symbol: str):
+    """Create a market depth visualization with white theme matching the reference design."""
+    if not order_book or 'bids' not in order_book or 'asks' not in order_book:
+        return
+    
+    # Process bids and asks
+    bids = np.array(order_book['bids'], dtype=float) if len(order_book['bids']) > 0 else np.array([[0, 0]])
+    asks = np.array(order_book['asks'], dtype=float) if len(order_book['asks']) > 0 else np.array([[0, 0]])
+    
+    if len(bids) == 0 or len(asks) == 0:
+        return
+    
+    # Process bids (reverse order to get ascending)
+    bid_prices = bids[:, 0][::-1]  # Reverse to get ascending order
+    bid_volumes = bids[:, 1][::-1]
+    cumulative_bid_volumes = np.cumsum(bid_volumes[::-1])[::-1]  # Compute properly ordered cumulative volume
+    
+    # Process asks (already in ascending order)
+    ask_prices = asks[:, 0]
+    ask_volumes = asks[:, 1]
+    cumulative_ask_volumes = np.cumsum(ask_volumes)
+    
+    # Calculate mid price
+    mid_price = (bid_prices[-1] + ask_prices[0]) / 2  # Using highest bid and lowest ask
+    
+    # Set white background
+    ax.set_facecolor('white')
+    fig.patch.set_facecolor('white')
+    
+    # Plot bids and asks with step and fill
+    ax.step(bid_prices, cumulative_bid_volumes, where='post', label='Bids', color='green', linewidth=1)
+    ax.fill_between(bid_prices, cumulative_bid_volumes, step='post', alpha=0.3, color='green')
+    
+    ax.step(ask_prices, cumulative_ask_volumes, where='post', label='Asks', color='red', linewidth=1)
+    ax.fill_between(ask_prices, cumulative_ask_volumes, step='post', alpha=0.3, color='red')
+    
+    # Add mid price line
+    ax.axvline(x=mid_price, color='grey', linestyle=':', alpha=0.3, label='Mid Price')
+    
+    # Set title and labels
+    ax.set_title(f'Order Book Depth for {symbol}', pad=20, fontsize=12, color='black')
+    ax.set_xlabel('Price', color='black', labelpad=10)
+    ax.set_ylabel('Cumulative Volume', color='black', labelpad=10)
+    
+    # Remove grid
+    ax.grid(False)
+    
+    # Adjust figure size to accommodate legend
+    box = ax.get_position()
+    ax.set_position([box.x0, box.y0, box.width * 0.95, box.height])
+    
+    # Place legend outside the plot on the right
+    ax.legend(frameon=True, 
+             facecolor='white', 
+             edgecolor='none', 
+             fontsize=8,
+             loc='center left', 
+             bbox_to_anchor=(1.01, 0.5))
+    
+    # Set x-axis limits and format ticks
+    price_range = max(ask_prices[-1] - bid_prices[0], 1e-8)
+    x_min = bid_prices[0] - price_range * 0.1
+    x_max = ask_prices[-1] + price_range * 0.1
+    ax.set_xlim(x_min, x_max)
+    
+    # Format x-axis ticks with dollar signs and proper spacing
+    tick_positions = np.linspace(x_min, x_max, 10)
+    ax.set_xticks(tick_positions)
+    ax.set_xticklabels([f'${x:,.2f}' for x in tick_positions], rotation=0)
+    
+    # Format y-axis with comma-separated numbers
+    ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f'{int(x):,}'))
+    
+    # Style the spines
+    for spine in ax.spines.values():
+        spine.set_color('black')
+        spine.set_linewidth(0.5)
+    
+    # Adjust tick colors and sizes
+    ax.tick_params(axis='both', colors='black', labelsize=8)
+    
+    # Tight layout with more right padding for legend
+    fig.tight_layout(pad=1.1)
 
 if __name__ == "__main__":
     main() 
