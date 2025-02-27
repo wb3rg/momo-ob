@@ -115,10 +115,7 @@ def fetch_market_data(exchange, symbol, lookback):
                         symbol=symbol,
                         timeframe='1m',
                         since=current_start,
-                        limit=batch_size,
-                        params={
-                            'granularity': '60'  # 1-minute candles
-                        }
+                        limit=batch_size
                     )
                     
                     if not ohlcv:
@@ -193,7 +190,7 @@ def calculate_metrics(df, ccxt_client, symbol, orderbook_depth):
         df['bubble_size'] = df['volume'] * df['orderbook_imbalance']
         df['bubble_size'] = df['bubble_size'] / df['bubble_size'].max()
         
-        # Reset index to make 'time' a column for AmplitudeBasedLabeler
+        # Reset index to make timestamp a column for AmplitudeBasedLabeler
         df = df.reset_index()
         
         # Create AmplitudeBasedLabeler instance
@@ -213,7 +210,7 @@ def calculate_metrics(df, ccxt_client, symbol, orderbook_depth):
         
         # Add labels to DataFrame and set index back
         df['momentum_label'] = momentum_labels
-        df.set_index('time', inplace=True)
+        df.set_index('timestamp', inplace=True)
         
         # Clean up intermediate columns
         df = df.drop(['cum_vol', 'cum_vol_price'], axis=1)
