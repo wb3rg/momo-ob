@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from datetime import datetime
 
 class AmplitudeBasedLabeler:
     def __init__(self, minamp: float = 20, Tinactive: int = 10):
@@ -48,7 +49,22 @@ class AmplitudeBasedLabeler:
         
         # Ensure the time column is in datetime format
         try:
-            times = pd.to_datetime(df_copy[time_col]).values
+            # Check if the time column contains datetime objects or timestamps
+            if pd.api.types.is_datetime64_any_dtype(df_copy[time_col]):
+                times = df_copy[time_col].values
+            else:
+                # Try to convert to datetime, handling both string dates and unix timestamps
+                try:
+                    # First try standard conversion
+                    times = pd.to_datetime(df_copy[time_col]).values
+                except:
+                    # If that fails, try assuming it's a unix timestamp in milliseconds
+                    try:
+                        times = pd.to_datetime(df_copy[time_col], unit='ms').values
+                    except:
+                        # Last resort: create a dummy time series
+                        print(f"WARNING: Could not convert {time_col} to datetime. Using dummy time values.")
+                        times = np.array([pd.Timestamp(datetime.now()) + pd.Timedelta(minutes=i) for i in range(len(df_copy))])
         except Exception as e:
             raise ValueError(f"Could not convert '{time_col}' column to datetime: {str(e)}")
         
@@ -59,7 +75,29 @@ class AmplitudeBasedLabeler:
         
         for i in range(1, len(prices)):
             price_change = (prices[i] - last_signal_price) / last_signal_price
-            time_diff = (times[i] - last_signal_time).astype('timedelta64[m]').astype(int)
+            
+            # Safely calculate time difference in minutes
+            try:
+                # Check if we're dealing with numpy datetime64 objects
+                if isinstance(times[i], np.datetime64) and isinstance(last_signal_time, np.datetime64):
+                    time_diff = (times[i] - last_signal_time).astype('timedelta64[m]').astype(int)
+                # Check if we're dealing with pandas Timestamp objects
+                elif isinstance(times[i], pd.Timestamp) and isinstance(last_signal_time, pd.Timestamp):
+                    time_diff = int((times[i] - last_signal_time).total_seconds() / 60)
+                # If types don't match or aren't datetime objects, use a fallback
+                else:
+                    # Convert both to pandas Timestamp if possible
+                    try:
+                        current_time = pd.Timestamp(times[i])
+                        last_time = pd.Timestamp(last_signal_time)
+                        time_diff = int((current_time - last_time).total_seconds() / 60)
+                    except:
+                        # If conversion fails, assume 1 minute difference
+                        print(f"WARNING: Could not calculate time difference at position {i}. Using default 1 minute.")
+                        time_diff = 1
+            except Exception as e:
+                print(f"WARNING: Error calculating time difference: {str(e)}. Using default 1 minute.")
+                time_diff = 1
             
             if abs(price_change) >= self.minamp:
                 current_direction = 1 if price_change > 0 else -1

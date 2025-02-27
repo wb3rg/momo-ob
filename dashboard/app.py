@@ -504,19 +504,24 @@ def plot_market_depth(fig, ax, order_book: Dict, symbol: str):
     ax.set_facecolor('white')
     fig.patch.set_facecolor('white')
     
+    # Create empty plot first for proper legend ordering
+    bid_line, = ax.plot([], [], color='green', linewidth=1, label='Bids')
+    ask_line, = ax.plot([], [], color='red', linewidth=1, label='Asks')
+    mid_line, = ax.plot([], [], color='gray', linestyle=':', linewidth=1, label='Mid Price')
+    
     # Plot bids and asks with step and fill
-    ax.step(bid_prices, cumulative_bid_volumes, where='post', label='Bids', color='green', linewidth=1)
+    ax.step(bid_prices, cumulative_bid_volumes, where='post', color='green', linewidth=1)
     ax.fill_between(bid_prices, cumulative_bid_volumes, step='post', alpha=0.3, color='green')
     
-    ax.step(ask_prices, cumulative_ask_volumes, where='post', label='Asks', color='red', linewidth=1)
+    ax.step(ask_prices, cumulative_ask_volumes, where='post', color='red', linewidth=1)
     ax.fill_between(ask_prices, cumulative_ask_volumes, step='post', alpha=0.3, color='red')
     
-    # Add mid price line
-    ax.axvline(x=mid_price, color='grey', linestyle=':', alpha=0.3, label='Mid Price')
+    # Add mid price line (gray dotted)
+    ax.axvline(x=mid_price, color='gray', linestyle=':', alpha=0.3)
     
     # Set title and labels
     ax.set_title(f'Order Book Depth for {symbol}', pad=20, fontsize=12, color='black')
-    ax.set_xlabel('Price', color='black', labelpad=10)
+    ax.set_xlabel('', color='black', labelpad=10)  # Removed "Price" label
     ax.set_ylabel('Cumulative Volume', color='black', labelpad=10)
     
     # Remove grid
@@ -526,8 +531,9 @@ def plot_market_depth(fig, ax, order_book: Dict, symbol: str):
     box = ax.get_position()
     ax.set_position([box.x0, box.y0, box.width * 0.95, box.height])
     
-    # Place legend outside the plot on the right
-    ax.legend(frameon=True, 
+    # Place legend outside the plot on the right with correct labels
+    ax.legend(handles=[bid_line, ask_line, mid_line],
+             frameon=True, 
              facecolor='white', 
              edgecolor='none', 
              fontsize=8,
@@ -664,6 +670,24 @@ def main():
                         df = calculate_metrics(df, symbol, orderbook_depth)
                         last_minute = current_minute
                     
+                    # Safely convert to pydatetime
+                    try:
+                        # First try the standard conversion
+                        x_values = date2num(df.index.to_pydatetime())
+                    except (AttributeError, TypeError) as e:
+                        # If that fails, try a more robust approach
+                        try:
+                            # Try converting each timestamp individually
+                            x_values = np.array([date2num(pd.Timestamp(x).to_pydatetime()) for x in df.index])
+                        except Exception as e2:
+                            # If that also fails, use the raw values
+                            try:
+                                x_values = date2num(df.index.values)
+                            except Exception as e3:
+                                # Last resort: create numeric x-values
+                                st.warning(f"Using fallback numeric x-axis due to datetime conversion error: {str(e3)}")
+                                x_values = np.arange(len(df))
+                    
                     # Create momentum plot
                     fig_momentum = plt.figure(figsize=CONFIG['visualization']['figure_size'])
                     gs_momentum = gridspec.GridSpec(1, 2, width_ratios=[8, 1])
@@ -672,7 +696,6 @@ def main():
                     ax_price = fig_momentum.add_subplot(gs_momentum[0])
                     ax_vol = fig_momentum.add_subplot(gs_momentum[1], sharey=ax_price)
                     
-                    x_values = date2num(df.index.to_pydatetime())
                     plot_price_action(ax_price, df, x_values)
                     max_width = plot_volume_profile(ax_vol, df)
                     style_plot(fig_momentum, ax_price, ax_vol, df, x_values, max_width)
